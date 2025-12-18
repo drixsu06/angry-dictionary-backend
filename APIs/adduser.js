@@ -13,18 +13,22 @@ router.post("/", async (req, res) => {
 
   const email = `${username}@example.com`;
 
-  if (!isAdminInitialized || !db) {
-    return res.status(503).json({ error: 'Server misconfiguration: admin SDK not initialized. Provide service account or set GOOGLE_SERVICE_KEY_B64.' });
+  if (!isAdminInitialized) {
+    return res.status(503).json({ error: 'Server misconfiguration: Admin SDK not initialized. Provide service account.' });
   }
 
   const userRecord = await admin.auth().createUser({ email, password, displayName: username });
-  await db.collection("users").doc(userRecord.uid).set({
-    username,
-    provider: "firebase",
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+  // If Firestore is available, persist the profile; otherwise return created user with serverFallback flag
+  if (db) {
+    await db.collection("users").doc(userRecord.uid).set({
+      username,
+      provider: "firebase",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return res.status(201).json({ message: "User created", uid: userRecord.uid, username });
+  }
 
-  res.status(201).json({ message: "User created", uid: userRecord.uid, username });
+  return res.status(201).json({ message: 'User created (admin-only, no Firestore)', uid: userRecord.uid, username, serverFallback: true });
 });
 router.post("/login", async (req, res) => {
   try {

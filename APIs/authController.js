@@ -12,23 +12,32 @@ const userCollection = db ? db.collection("users") : null;
  */
 router.get("/", async (req, res) => {
   try {
-    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized' });
-    const snapshot = await userCollection.get();
+    if (userCollection) {
+      const snapshot = await userCollection.get();
+      const users = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          username: data.username,
+          provider: data.provider,
+          createdAt: data.createdAt ? data.createdAt.toDate().toLocaleString() : null,
+        };
+      });
+      return res.json(users);
+    }
 
-    const users = snapshot.docs.map((doc) => {
-      const data = doc.data();
-
-      return {
-        id: doc.id,
-        username: data.username,
-        provider: data.provider,
-        createdAt: data.createdAt
-          ? data.createdAt.toDate().toLocaleString()
-          : null,
-      };
-    });
-
-    res.json(users);
+    // Firestore not available: fall back to Firebase Auth listing if possible
+    if (!isAdminInitialized) {
+      return res.status(503).json({ error: 'Server misconfiguration: Firestore and Admin SDK not initialized' });
+    }
+    const list = await admin.auth().listUsers(1000);
+    const users = list.users.map((u) => ({
+      id: u.uid,
+      username: u.displayName || (u.email && u.email.split('@')[0]) || null,
+      provider: 'firebase',
+      createdAt: u.metadata && u.metadata.creationTime ? u.metadata.creationTime : null,
+    }));
+    return res.json(users);
   } catch (error) {
     console.error("Error getting users:", error);
     res.status(500).json({ error: "Failed to fetch users" });
@@ -40,12 +49,23 @@ router.get("/", async (req, res) => {
  */
 router.get("/:id", async (req, res) => {
   try {
-    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized' });
-    const doc = await userCollection.doc(req.params.id).get();
-    if (!doc.exists) return res.status(404).json({ error: 'User not found' });
+    if (userCollection) {
+      const doc = await userCollection.doc(req.params.id).get();
+      if (!doc.exists) return res.status(404).json({ error: 'User not found' });
+      const data = doc.data();
+      return res.json({ id: doc.id, ...data });
+    }
 
-    const data = doc.data();
-    res.json({ id: doc.id, ...data });
+    // Firestore not available: fall back to Firebase Auth getUser
+    if (!isAdminInitialized) {
+      return res.status(503).json({ error: 'Server misconfiguration: Firestore and Admin SDK not initialized' });
+    }
+    try {
+      const u = await admin.auth().getUser(req.params.id);
+      return res.json({ id: u.uid, username: u.displayName || (u.email && u.email.split('@')[0]) || null, provider: 'firebase' });
+    } catch (e) {
+      return res.status(404).json({ error: 'User not found' });
+    }
   } catch (error) {
     console.error('Error getting user:', error);
     res.status(500).json({ error: 'Failed to fetch user' });
