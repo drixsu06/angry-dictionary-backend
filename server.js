@@ -11,6 +11,7 @@ import addUserRoutes from "./APIs/adduser.js";
 import userControllerRoutes from "./APIs/authController.js";
 import historyRoutes, { flushFallback } from "./routes/history.js";
 import healthRoutes from "./APIs/health.js";
+import { isAdminInitialized } from './firebase.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,6 +21,19 @@ const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+
+// Global error handlers to surface crashes in Render logs
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err && (err.stack || err.message) ? (err.stack || err.message) : err);
+  // Let the process exit so Render can restart the service; keep logs useful
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, p) => {
+  console.error('Unhandled Rejection at:', p, 'reason:', reason && (reason.stack || reason.message) ? (reason.stack || reason.message) : reason);
+  // Let the process exit so Render can restart the service
+  process.exit(1);
+});
 
 // Connect to MongoDB with retry logic. Only attempt connection when a MONGO_URI
 // is provided in production. For local development we'll default to localhost.
@@ -59,6 +73,9 @@ async function connectWithRetry() {
 
 connectWithRetry();
 
+// Startup diagnostic log: helpful in Render build logs to see service-account state
+console.log('Startup diagnostics: NODE_ENV=', process.env.NODE_ENV, 'isAdminInitialized=', !!isAdminInitialized);
+
 mongoose.connection.on('connected', () => {
   console.log('Mongoose connected event');
   try { flushFallback(); } catch (e) { console.warn('flushFallback on connected failed', e); }
@@ -76,4 +93,16 @@ app.use("/health", healthRoutes);
 console.log("Firebase API Key:", process.env.FIREBASE_API_KEY);
 app.listen(port, () => {
   console.log(`🚀 Server running on http://localhost:${port}`);
+});
+
+// Graceful shutdown for Render
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received: shutting down');
+  try { mongoose.connection.close(false); } catch (e) { /* ignore */ }
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  console.log('SIGINT received: shutting down');
+  try { mongoose.connection.close(false); } catch (e) { /* ignore */ }
+  process.exit(0);
 });
