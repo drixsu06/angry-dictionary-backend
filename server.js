@@ -20,13 +20,28 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Connect to MongoDB with retry logic
-const mongoUri = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/angry";
+// Connect to MongoDB with retry logic. Only attempt connection when a MONGO_URI
+// is provided in production. For local development we'll default to localhost.
 const mongoDbName = process.env.MONGO_DB || "angry";
+const isProd = process.env.NODE_ENV === 'production';
+const mongoUriEnv = process.env.MONGO_URI;
 
 async function connectWithRetry() {
+  // Determine whether we should attempt a Mongo connection
+  let mongoUriToUse = null;
+  if (mongoUriEnv) {
+    mongoUriToUse = mongoUriEnv;
+  } else if (!isProd) {
+    mongoUriToUse = "mongodb://127.0.0.1:27017/angry";
+  }
+
+  if (!mongoUriToUse) {
+    console.warn('No MONGO_URI provided and running in production — skipping MongoDB connection. History will use in-memory fallback.');
+    return;
+  }
+
   try {
-    await mongoose.connect(mongoUri, { dbName: mongoDbName });
+    await mongoose.connect(mongoUriToUse, { dbName: mongoDbName });
     console.log("✅ Connected to MongoDB");
     // flush any fallback history saved while DB was down
     try {
@@ -35,7 +50,7 @@ async function connectWithRetry() {
       console.warn('flushFallback failed', err);
     }
   } catch (err) {
-    console.error("MongoDB connection error:", err?.message || err);
+    console.error("MongoDB connection error:", (err && err.message) || err);
     console.log("Retrying MongoDB connection in 5s...");
     setTimeout(connectWithRetry, 5000);
   }
