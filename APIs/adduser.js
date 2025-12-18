@@ -1,5 +1,7 @@
 import express from "express";
 import bcrypt from "bcrypt";
+import mongoose from 'mongoose';
+import User from '../models/User.js';
 import { admin, db, isAdminInitialized } from "../firebase.js";
 
 const router = express.Router();
@@ -14,40 +16,46 @@ router.post("/", async (req, res) => {
 
   const email = `${username}@example.com`;
   // Prefer to create user in Firebase Auth (if Admin SDK available) and also store a hashed password in Firestore
+  // Prefer MongoDB when available
+  const mongoConnected = mongoose.connection && mongoose.connection.readyState === 1;
+  if (mongoConnected) {
+    try {
+      const passwordHash = await bcrypt.hash(password, 10);
+      const emailAddr = email;
+      const doc = new User({ username, email: emailAddr, passwordHash, provider: 'local' });
+      await doc.save();
+      // Also try creating Firebase Auth entry if Admin SDK available
+      if (isAdminInitialized) {
+        try { await admin.auth().createUser({ uid: String(doc._id), email: emailAddr, password, displayName: username }); } catch(e) { console.warn('Failed to create Firebase Auth user for Mongo user', e); }
+      }
+      return res.status(201).json({ message: 'User created', uid: String(doc._id), username });
+    } catch (err) {
+      console.error('Failed to create user in MongoDB:', err);
+      return res.status(500).json({ error: 'Failed to create user in database', details: err?.message });
+    }
+  }
+
+  // Fallback: use Firestore if available
   let userRecord = null;
   if (isAdminInitialized) {
     try {
       userRecord = await admin.auth().createUser({ email, password, displayName: username });
     } catch (e) {
       console.error('Failed to create user in Firebase Auth', e);
-      // Continue to try to persist locally in Firestore if possible
     }
   }
 
-  // If Firestore available, store profile + password hash so server can authenticate without FIREBASE_API_KEY
   if (db) {
     try {
       const passwordHash = await bcrypt.hash(password, 10);
       const docId = userRecord ? userRecord.uid : `local-${Date.now()}`;
-      await db.collection("users").doc(docId).set({
-        username,
-        provider: userRecord ? 'firebase' : 'local',
-        createdAt: admin && admin.firestore && admin.firestore.FieldValue ? admin.firestore.FieldValue.serverTimestamp() : new Date(),
-        passwordHash,
-      });
-      return res.status(201).json({ message: "User created", uid: docId, username });
+      await db.collection('users').doc(docId).set({ username, provider: userRecord ? 'firebase' : 'local', createdAt: admin && admin.firestore && admin.firestore.FieldValue ? admin.firestore.FieldValue.serverTimestamp() : new Date(), passwordHash });
+      return res.status(201).json({ message: 'User created', uid: docId, username });
     } catch (err) {
       console.error('Failed to write user profile to Firestore:', err);
-      if (userRecord) {
-        return res.status(201).json({ message: 'User created (auth-only). Firestore write failed.', uid: userRecord.uid, username, firestoreError: err?.message });
-      }
+      if (userRecord) return res.status(201).json({ message: 'User created (auth-only). Firestore write failed.', uid: userRecord.uid, username, firestoreError: err?.message });
       return res.status(201).json({ message: 'User created locally but Firestore write failed', uid: null, username, firestoreError: err?.message });
     }
-  }
-
-  // If no Firestore, but Admin created user, respond with auth-only
-  if (userRecord) {
-    return res.status(201).json({ message: 'User created (auth-only, no Firestore)', uid: userRecord.uid, username, serverFallback: true });
   }
 
   return res.status(500).json({ error: 'Failed to create user: no persistence available' });
@@ -69,6 +77,30 @@ router.post("/login", async (req, res) => {
 
     if (!isApiKeyValid) {
       // Try server-side Firestore password check first (if available)
+      // Prefer MongoDB password auth if available
+      if (mongoose.connection && mongoose.connection.readyState === 1) {
+        try {
+          const u = await User.findOne({ username }).exec();
+          if (u && u.passwordHash) {
+            const ok = await bcrypt.compare(password, u.passwordHash);
+            if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+            // create custom token if possible
+            if (isAdminInitialized) {
+              try {
+                const customToken = await admin.auth().createCustomToken(String(u._id));
+                return res.status(200).json({ message: 'Login successful (mongo)', uid: String(u._id), token: customToken, serverFallback: true });
+              } catch (e) {
+                console.warn('Failed to create custom token after mongo auth:', e);
+                return res.status(200).json({ message: 'Login successful (mongo)', uid: String(u._id), serverFallback: true });
+              }
+            }
+            return res.status(200).json({ message: 'Login successful (mongo)', uid: String(u._id), serverFallback: true });
+          }
+        } catch (e) {
+          console.warn('MongoDB password auth failed:', e);
+        }
+      }
+
       if (db) {
         try {
           const q = await db.collection('users').where('username', '==', username).limit(1).get();

@@ -1,4 +1,6 @@
 import express from "express";
+import mongoose from 'mongoose';
+import User from '../models/User.js';
 import { db, admin, isAdminInitialized } from "../firebase.js";
 
 const router = express.Router();
@@ -12,6 +14,14 @@ const userCollection = db ? db.collection("users") : null;
  */
 router.get("/", async (req, res) => {
   try {
+    // Prefer MongoDB if connected
+    // prefer mongo if available
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      const docs = await User.find().sort({ createdAt: -1 }).lean().exec();
+      const users = docs.map((d) => ({ id: String(d._id), username: d.username, provider: d.provider || 'local', createdAt: d.createdAt }));
+      return res.json(users);
+    }
+
     if (userCollection) {
       const snapshot = await userCollection.get();
       const users = snapshot.docs.map((doc) => {
@@ -28,7 +38,7 @@ router.get("/", async (req, res) => {
 
     // Firestore not available: fall back to Firebase Auth listing if possible
     if (!isAdminInitialized) {
-      return res.status(503).json({ error: 'Server misconfiguration: Firestore and Admin SDK not initialized' });
+      return res.status(503).json({ error: 'Server misconfiguration: No persistence available and Admin SDK not initialized' });
     }
     const list = await admin.auth().listUsers(1000);
     const users = list.users.map((u) => ({
@@ -52,6 +62,13 @@ router.get("/", async (req, res) => {
  */
 router.get("/:id", async (req, res) => {
   try {
+    // Prefer Mongo
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      const u = await User.findById(req.params.id).lean().exec();
+      if (!u) return res.status(404).json({ error: 'User not found' });
+      return res.json({ id: String(u._id), username: u.username, provider: u.provider || 'local', createdAt: u.createdAt, profileDescription: u.profileDescription, settings: u.settings });
+    }
+
     if (userCollection) {
       const doc = await userCollection.doc(req.params.id).get();
       if (!doc.exists) return res.status(404).json({ error: 'User not found' });
@@ -61,7 +78,7 @@ router.get("/:id", async (req, res) => {
 
     // Firestore not available: fall back to Firebase Auth getUser
     if (!isAdminInitialized) {
-      return res.status(503).json({ error: 'Server misconfiguration: Firestore and Admin SDK not initialized' });
+      return res.status(503).json({ error: 'Server misconfiguration: No persistence available and Admin SDK not initialized' });
     }
     try {
       const u = await admin.auth().getUser(req.params.id);
@@ -108,8 +125,13 @@ router.put("/:id", async (req, res) => {
     if (settings) updateBody.settings = settings;
     updateBody.updatedAt = isAdminInitialized && admin && admin.firestore ? admin.firestore.FieldValue.serverTimestamp() : new Date();
 
-    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized - cannot update user profile' });
-    await userCollection.doc(req.params.id).set(updateBody, { merge: true });
+    // Prefer Mongo update if connected
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      await User.findByIdAndUpdate(req.params.id, updateBody, { new: true, upsert: false }).exec();
+    } else {
+      if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: No persistence available - cannot update user profile' });
+      await userCollection.doc(req.params.id).set(updateBody, { merge: true });
+    }
 
     const resp = { id: req.params.id, ...updateBody, message: 'User updated successfully' };
     res.json(resp);
@@ -125,12 +147,16 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     // Delete from Firebase Auth
-    if (!isAdminInitialized) return res.status(503).json({ error: 'Server misconfiguration: Admin SDK not initialized - cannot delete user' });
+    if (!isAdminInitialized) return res.status(503).json({ error: 'Server misconfiguration: Admin SDK not initialized - cannot delete user from auth' });
     await admin.auth().deleteUser(req.params.id);
 
-    // Delete from Firestore
-    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized - cannot delete user document' });
-    await userCollection.doc(req.params.id).delete();
+    // Delete from DB (prefer Mongo)
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      await User.findByIdAndDelete(req.params.id).exec();
+    } else {
+      if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: No persistence available - cannot delete user document' });
+      await userCollection.doc(req.params.id).delete();
+    }
 
     res.json({
       id: req.params.id,
