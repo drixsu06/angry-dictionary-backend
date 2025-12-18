@@ -10,6 +10,7 @@ import path from "path";
 import addUserRoutes from "./APIs/adduser.js";
 import userControllerRoutes from "./APIs/authController.js";
 import historyRoutes, { flushFallback } from "./routes/history.js";
+import healthRoutes from "./APIs/health.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,6 +71,7 @@ app.get("/", (req, res) => {
 app.use("/users", addUserRoutes);
 app.use("/users", userControllerRoutes);
 app.use("/api/history", historyRoutes);
+app.use("/health", healthRoutes);
 
 console.log("Firebase API Key:", process.env.FIREBASE_API_KEY);
 app.listen(port, () => {
