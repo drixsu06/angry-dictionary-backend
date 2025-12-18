@@ -1,5 +1,5 @@
 import express from "express";
-import { admin, db } from "../firebase.js";
+import { admin, db, isAdminInitialized } from "../firebase.js";
 
 const router = express.Router();
 
@@ -12,6 +12,10 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "Passwords do not match" });
 
   const email = `${username}@example.com`;
+
+  if (!isAdminInitialized || !db) {
+    return res.status(503).json({ error: 'Server misconfiguration: admin SDK not initialized. Provide service account or set GOOGLE_SERVICE_KEY_B64.' });
+  }
 
   const userRecord = await admin.auth().createUser({ email, password, displayName: username });
   await db.collection("users").doc(userRecord.uid).set({
@@ -38,17 +42,19 @@ router.post("/login", async (req, res) => {
     const isApiKeyValid = !!FIREBASE_API_KEY && !FIREBASE_API_KEY.toUpperCase().includes('YOUR') && FIREBASE_API_KEY.trim() !== '';
 
     if (!isApiKeyValid) {
-      // Try server-side Admin SDK fallback: if Admin SDK is initialized, issue a custom token
-      try {
-        const user = await admin.auth().getUserByEmail(email);
-        const customToken = await admin.auth().createCustomToken(user.uid);
-        // Return a production-safe response indicating server-side token
-        return res.status(200).json({ message: 'Server fallback: custom token created', uid: user.uid, token: customToken, serverFallback: true });
-      } catch (fallbackErr) {
-        console.error('FIREBASE_API_KEY missing and server-side fallback failed:', fallbackErr?.message || fallbackErr);
-        // Return 503 (Service Unavailable) with actionable message for deploy configuration
-        return res.status(503).json({ error: 'Server misconfiguration: missing or invalid Firebase web API key AND server fallback failed. Set FIREBASE_API_KEY (Web API Key) in your Render environment variables or provide a valid service account.' });
+      // If Admin SDK is initialized, try server-side fallback
+      if (isAdminInitialized) {
+        try {
+          const user = await admin.auth().getUserByEmail(email);
+          const customToken = await admin.auth().createCustomToken(user.uid);
+          return res.status(200).json({ message: 'Server fallback: custom token created', uid: user.uid, token: customToken, serverFallback: true });
+        } catch (fallbackErr) {
+          console.error('FIREBASE_API_KEY missing and server-side fallback failed:', (fallbackErr && fallbackErr.message) || fallbackErr);
+          return res.status(503).json({ error: 'Server misconfiguration: missing or invalid Firebase web API key AND server fallback failed. Set FIREBASE_API_KEY (Web API Key) in your Render environment variables or provide a valid service account.' });
+        }
       }
+      // No Admin SDK available
+      return res.status(503).json({ error: 'Server misconfiguration: missing Firebase web API key and Admin SDK not initialized. Provide FIREBASE_API_KEY or service account.' });
     }
 
     const signInUrl = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
@@ -67,14 +73,21 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: data.error.message });
     }
 
-    // Optional: fetch user profile from Firestore
-    const userDoc = await db.collection("users").doc(data.localId).get();
-    const profile = userDoc.exists ? userDoc.data() : null;
+    // Optional: fetch user profile from Firestore if available
+    let profile = null;
+    if (db) {
+      try {
+        const userDoc = await db.collection("users").doc(data.localId).get();
+        profile = userDoc.exists ? userDoc.data() : null;
+      } catch (e) {
+        console.warn('Failed to fetch profile from Firestore:', (e && e.message) || e);
+      }
+    }
 
     res.status(200).json({
       message: "Login successful",
       uid: data.localId,
-      username: profile?.username || username,
+      username: (profile && profile.username) || username,
       token: data.idToken,
     });
   } catch (error) {

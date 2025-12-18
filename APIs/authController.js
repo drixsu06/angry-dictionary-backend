@@ -1,14 +1,18 @@
 import express from "express";
-import { db, admin } from "../firebase.js";
+import { db, admin, isAdminInitialized } from "../firebase.js";
 
 const router = express.Router();
-const userCollection = db.collection("users");
+if (!db) {
+  console.warn('Firestore `db` is not initialized - user routes will return 503');
+}
+const userCollection = db ? db.collection("users") : null;
 
 /**
  * GET all users
  */
 router.get("/", async (req, res) => {
   try {
+    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized' });
     const snapshot = await userCollection.get();
 
     const users = snapshot.docs.map((doc) => {
@@ -36,6 +40,7 @@ router.get("/", async (req, res) => {
  */
 router.get("/:id", async (req, res) => {
   try {
+    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized' });
     const doc = await userCollection.doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ error: 'User not found' });
 
@@ -56,22 +61,28 @@ router.put("/:id", async (req, res) => {
 
     // If password provided, update Firebase Auth password
     if (password) {
+      if (!isAdminInitialized) return res.status(503).json({ error: 'Server misconfiguration: Admin SDK not initialized - cannot update password' });
       await admin.auth().updateUser(req.params.id, { password });
     }
 
     // If username provided, update displayName
     if (username) {
-      await admin.auth().updateUser(req.params.id, { displayName: username }).catch((e) => {
-        console.warn('Failed to update auth displayName', e.message);
-      });
+      if (isAdminInitialized) {
+        await admin.auth().updateUser(req.params.id, { displayName: username }).catch((e) => {
+          console.warn('Failed to update auth displayName', (e && e.message) || e);
+        });
+      } else {
+        console.warn('Admin SDK not initialized - skipping auth displayName update');
+      }
     }
 
     const updateBody = {};
     if (username) updateBody.username = username;
     if (profileDescription) updateBody.profileDescription = profileDescription;
     if (settings) updateBody.settings = settings;
-    updateBody.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+    updateBody.updatedAt = isAdminInitialized && admin && admin.firestore ? admin.firestore.FieldValue.serverTimestamp() : new Date();
 
+    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized - cannot update user profile' });
     await userCollection.doc(req.params.id).set(updateBody, { merge: true });
 
     const resp = { id: req.params.id, ...updateBody, message: 'User updated successfully' };
@@ -88,9 +99,11 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     // Delete from Firebase Auth
+    if (!isAdminInitialized) return res.status(503).json({ error: 'Server misconfiguration: Admin SDK not initialized - cannot delete user' });
     await admin.auth().deleteUser(req.params.id);
 
     // Delete from Firestore
+    if (!userCollection) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized - cannot delete user document' });
     await userCollection.doc(req.params.id).delete();
 
     res.json({

@@ -37,13 +37,22 @@ if (!credential) {
     console.warn('No valid service account loaded from env or local file:', (err && err.message) || err);
   }
 }
+let db = null;
+let isAdminInitialized = false;
+if (credential) {
+  try {
+    admin.initializeApp({ credential: credential });
+    db = admin.firestore();
+    isAdminInitialized = true;
+    console.log('Firebase Admin SDK initialized');
+  } catch (err) {
+    console.error('Failed to initialize Firebase Admin SDK:', (err && err.message) || err);
+  }
+} else {
+  console.warn('Firebase Admin SDK not initialized: no service account available');
+}
 
-admin.initializeApp({
-  credential: credential || undefined,
-});
-
-export const db = admin.firestore();
-export { admin };
+export { db, admin, isAdminInitialized };
 
 // Helpful debug: log presence of FIREBASE_API_KEY (not the key value)
 if (process.env.FIREBASE_API_KEY) {
