@@ -1,6 +1,7 @@
 import admin from "firebase-admin";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,20 +32,34 @@ if (!credential && process.env.GOOGLE_SERVICE_KEY_B64) {
 if (!credential) {
   const serviceAccountPath = path.join(__dirname, "db/ServiceKeyy.json");
   try {
-    credential = admin.credential.cert(serviceAccountPath);
-    console.log('Loaded service account from local file db/ServiceKeyy.json');
+    if (fs.existsSync(serviceAccountPath)) {
+      const raw = fs.readFileSync(serviceAccountPath, { encoding: 'utf8' });
+      const parsed = JSON.parse(raw);
+      credential = admin.credential.cert(parsed);
+      console.log('Loaded service account from local file db/ServiceKeyy.json');
+    } else {
+      console.warn('Local service account file db/ServiceKeyy.json not found');
+    }
   } catch (err) {
-    console.warn('No valid service account loaded from env or local file:', (err && err.message) || err);
+    console.warn('Failed to load local service account from db/ServiceKeyy.json:', (err && err.message) || err);
   }
 }
 let db = null;
 let isAdminInitialized = false;
 if (credential) {
   try {
-    admin.initializeApp({ credential: credential });
-    db = admin.firestore();
-    isAdminInitialized = true;
-    console.log('Firebase Admin SDK initialized');
+    if (!admin.apps || !admin.apps.length) {
+      admin.initializeApp({ credential: credential });
+      console.log('Firebase Admin SDK initialized');
+    } else {
+      console.log('Firebase Admin SDK already initialized');
+    }
+    try {
+      db = admin.firestore();
+      isAdminInitialized = true;
+    } catch (e) {
+      console.warn('Firestore could not be initialized after Admin SDK init:', (e && e.message) || e);
+    }
   } catch (err) {
     console.error('Failed to initialize Firebase Admin SDK:', (err && err.message) || err);
   }
