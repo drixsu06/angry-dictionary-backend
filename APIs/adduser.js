@@ -20,12 +20,18 @@ router.post("/", async (req, res) => {
   const userRecord = await admin.auth().createUser({ email, password, displayName: username });
   // If Firestore is available, persist the profile; otherwise return created user with serverFallback flag
   if (db) {
-    await db.collection("users").doc(userRecord.uid).set({
-      username,
-      provider: "firebase",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    return res.status(201).json({ message: "User created", uid: userRecord.uid, username });
+    try {
+      await db.collection("users").doc(userRecord.uid).set({
+        username,
+        provider: "firebase",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return res.status(201).json({ message: "User created", uid: userRecord.uid, username });
+    } catch (err) {
+      console.error('Failed to write user profile to Firestore:', err);
+      // Return created user but notify that Firestore write failed
+      return res.status(201).json({ message: 'User created (auth-only). Firestore write failed.', uid: userRecord.uid, username, firestoreError: err?.message });
+    }
   }
 
   return res.status(201).json({ message: 'User created (admin-only, no Firestore)', uid: userRecord.uid, username, serverFallback: true });
@@ -96,6 +102,9 @@ router.post("/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error);
+    if (error && (error.code === 5 || error.code === '5' || error.code === 'NOT_FOUND')) {
+      return res.status(503).json({ error: 'Firestore resource not found or inaccessible. Check service account and project configuration.' });
+    }
     res.status(500).json({ error: "Failed to login" });
   }
 });

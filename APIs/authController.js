@@ -40,6 +40,9 @@ router.get("/", async (req, res) => {
     return res.json(users);
   } catch (error) {
     console.error("Error getting users:", error);
+    if (error && (error.code === 5 || error.code === '5' || error.code === 'NOT_FOUND')) {
+      return res.status(503).json({ error: 'Firestore resource not found or inaccessible. Check service account and project configuration.' });
+    }
     res.status(500).json({ error: "Failed to fetch users" });
   }
 });
@@ -68,6 +71,9 @@ router.get("/:id", async (req, res) => {
     }
   } catch (error) {
     console.error('Error getting user:', error);
+    if (error && (error.code === 5 || error.code === '5' || error.code === 'NOT_FOUND')) {
+      return res.status(503).json({ error: 'Firestore resource not found or inaccessible. Check service account and project configuration.' });
+    }
     res.status(500).json({ error: 'Failed to fetch user' });
   }
 });
@@ -147,18 +153,27 @@ router.get("/filter", async (req, res) => {
     if (!provider) {
       return res.status(400).json({ error: "Provider is required" });
     }
+    if (!userCollection) {
+      // Fall back to listing from Auth if available
+      if (!isAdminInitialized) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized and Admin SDK not available' });
+      const list = await admin.auth().listUsers(1000);
+      const users = list.users
+        .map((u) => ({ id: u.uid, username: u.displayName || (u.email && u.email.split('@')[0]) || null, provider: 'firebase' }))
+        .filter((u) => provider === 'firebase');
+      return res.json(users);
+    }
 
-    const snapshot = await userCollection
-      .where("provider", "==", provider)
-      .get();
-
-    const users = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      username: doc.data().username,
-      provider: doc.data().provider,
-    }));
-
-    res.json(users);
+    try {
+      const snapshot = await userCollection.where("provider", "==", provider).get();
+      const users = snapshot.docs.map((doc) => ({ id: doc.id, username: doc.data().username, provider: doc.data().provider }));
+      return res.json(users);
+    } catch (err) {
+      console.error('Firestore error filtering users:', err);
+      if (err && (err.code === 5 || err.code === '5' || err.code === 'NOT_FOUND')) {
+        return res.status(503).json({ error: 'Firestore resource not found or inaccessible. Check service account and project configuration.' });
+      }
+      return res.status(500).json({ error: 'Failed to filter users' });
+    }
   } catch (error) {
     console.error("Error filtering users:", error);
     res.status(500).json({ error: "Failed to filter users" });
@@ -170,18 +185,26 @@ router.get("/filter", async (req, res) => {
  */
 router.get("/sort/desc", async (req, res) => {
   try {
-    const snapshot = await userCollection.get();
+    if (!userCollection) {
+      if (!isAdminInitialized) return res.status(503).json({ error: 'Server misconfiguration: Firestore not initialized and Admin SDK not available' });
+      const list = await admin.auth().listUsers(1000);
+      const users = list.users.map((u) => ({ id: u.uid, username: u.displayName || (u.email && u.email.split('@')[0]) || '' }));
+      users.sort((a, b) => b.username.localeCompare(a.username));
+      return res.json(users);
+    }
 
-    const users = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      username: doc.data().username || "",
-    }));
-
-    users.sort((a, b) =>
-      b.username.localeCompare(a.username)
-    );
-
-    res.json(users);
+    try {
+      const snapshot = await userCollection.get();
+      const users = snapshot.docs.map((doc) => ({ id: doc.id, username: doc.data().username || '' }));
+      users.sort((a, b) => b.username.localeCompare(a.username));
+      return res.json(users);
+    } catch (err) {
+      console.error('Firestore error sorting users:', err);
+      if (err && (err.code === 5 || err.code === '5' || err.code === 'NOT_FOUND')) {
+        return res.status(503).json({ error: 'Firestore resource not found or inaccessible. Check service account and project configuration.' });
+      }
+      return res.status(500).json({ error: 'Failed to sort users' });
+    }
   } catch (error) {
     console.error("Error sorting users:", error);
     res.status(500).json({ error: "Failed to sort users" });
