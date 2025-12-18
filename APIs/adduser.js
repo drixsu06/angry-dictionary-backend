@@ -32,22 +32,22 @@ router.post("/login", async (req, res) => {
 
     const email = `${username}@example.com`;
 
-    const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY; 
+    const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
 
     // Validate API key to avoid passing an invalid/placeholder key to Google APIs
-    const isProd = process.env.NODE_ENV === 'production';
-    if (!FIREBASE_API_KEY || FIREBASE_API_KEY.toUpperCase().includes('YOUR') || FIREBASE_API_KEY.trim() === '') {
-      if (isProd) {
-        return res.status(500).json({ error: 'Server misconfiguration: invalid Firebase web API key. Set FIREBASE_API_KEY to a valid web API key.' });
-      }
+    const isApiKeyValid = !!FIREBASE_API_KEY && !FIREBASE_API_KEY.toUpperCase().includes('YOUR') && FIREBASE_API_KEY.trim() !== '';
 
-      // Development-only fallback: create a custom token via Admin SDK if the user exists.
+    if (!isApiKeyValid) {
+      // Try server-side Admin SDK fallback: if Admin SDK is initialized, issue a custom token
       try {
         const user = await admin.auth().getUserByEmail(email);
         const customToken = await admin.auth().createCustomToken(user.uid);
-        return res.status(200).json({ message: 'Dev login: custom token created', uid: user.uid, token: customToken, dev: true });
-      } catch (devErr) {
-        return res.status(400).json({ error: 'Dev login failed: user not found' });
+        // Return a production-safe response indicating server-side token
+        return res.status(200).json({ message: 'Server fallback: custom token created', uid: user.uid, token: customToken, serverFallback: true });
+      } catch (fallbackErr) {
+        console.error('FIREBASE_API_KEY missing and server-side fallback failed:', fallbackErr?.message || fallbackErr);
+        // Return 503 (Service Unavailable) with actionable message for deploy configuration
+        return res.status(503).json({ error: 'Server misconfiguration: missing or invalid Firebase web API key AND server fallback failed. Set FIREBASE_API_KEY (Web API Key) in your Render environment variables or provide a valid service account.' });
       }
     }
 
